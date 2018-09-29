@@ -44,13 +44,12 @@ messages = {'gtp': {1: {16: 'CreatePDPContextRequest', 17: 'CreatePDPContextResp
 
 class Analyzer(Process):
 
-    # def __init__(self, vlan_id, packets_queue, results_queue):
-    def __init__(self, vlan_id, packets_queue):
+    def __init__(self, vlan_id, packets_queue, results_queue):
         Process.__init__(self)
         self.name = 'Process-{0}'.format(vlan_id)
         self.vlan_id = int(vlan_id)
         self.packets_queue = packets_queue
-        # self.results_queue = results_queue
+        self.results_queue = results_queue
         self.results_dict = {self.vlan_id: {}}
 
     def run(self):
@@ -63,7 +62,7 @@ class Analyzer(Process):
                 # Poison pill means shutdown
                 print '%s: Exiting' % self.name
                 self.packets_queue.task_done()
-                # self.results_queue.put(self.results_dict)
+                self.results_queue.put(self.results_dict)
                 break
 
             # Create a new dictionary for the couple (ip src, ip dst) if it does not exist yet
@@ -192,8 +191,8 @@ def process_pcap(pcap):
             if vlan_id not in processes.keys():
                 # processes[vlan_id] = Analyzer(vlan_id, packets_to_process[vlan_id], results[vlan_id])
                 print 'Creating Analyzer for VLAN id {0}'.format(vlan_id)
-                # processes[vlan_id] = Analyzer(vlan_id, packets_to_process[vlan_id], results)
-                processes[vlan_id] = Analyzer(vlan_id, packets_to_process[vlan_id])
+                processes[vlan_id] = Analyzer(vlan_id, packets_to_process[vlan_id], results)
+                # processes[vlan_id] = Analyzer(vlan_id, packets_to_process[vlan_id])
                 processes[vlan_id].start()
 
             # # Add package to queue for the corresponding VLAN
@@ -229,7 +228,17 @@ def process_pcap(pcap):
     #                   format(ips[0], ips[1], msg[0], msg[1], results[vlan][ips][msg]))
     # print the output
     while not results.empty():
-        print(results.get())
+        # print(results.get())
+        d = results.get()
+        for k, v in d.iteritems():
+            for (src, dst), m in v.iteritems():
+                for (gtp_v, gtp_m), count in m.iteritems():
+                    try:
+                        print("vlan id: {0}, src ip: {1}, dst ip: {2}, gtp v{3} message: {4}, count: {5}".
+                              format(k, int2ip(src), int2ip(dst), gtp_v, messages['gtp'][gtp_v][gtp_m], count))
+                    except:
+                        pass
+
 
 def parse_options(argv):
     """
