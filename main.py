@@ -4,14 +4,15 @@ Use PyShark to read pcap files or traffic and analyze them
 """
 import datetime
 # import multiprocessing as mp
-from multiprocessing import Process, Queue, JoinableQueue, cpu_count
+from multiprocessing import Process, Manager, JoinableQueue, Queue, cpu_count
 # import queue # imported for using queue.Empty exception
 from optparse import OptionParser
 import pyshark
-# from Queue import Queue
+# from Queue import Empty, Full
 import socket
+import struct
 import sys
-import time
+from time import time, sleep
 reload(sys)
 sys.setdefaultencoding('utf8')
 
@@ -41,108 +42,80 @@ messages = {'gtp': {1: {16: 'CreatePDPContextRequest', 17: 'CreatePDPContextResp
                         36: 'DeleteSessionRequest', 37: 'DeleteSessionResponse'}}}
 
 
-# class Analyzer(Process):
-#
-#     def __init__(self, vlan_id, packet_queue, result_queue):
-#         Process.__init__(self)
-#         self.name = 'Process-{0}'.format(vlan_id)
-#         self.packet_queue = packet_queue
-#         self.result_queue = result_queue
-#
-#     def run(self):
-#         proc_name = self.name
-#         while True:
-#             try:
-#                 # next_packet = self.packet_queue.get()
-#                 next_packet = self.packet_queue.get_nowait()
-#                 if next_packet is None:
-#                     # Poison pill means shutdown
-#                     print '%s: Exiting' % proc_name
-#                     self.packet_queue.task_done()
-#                     break
-#                 print '%s: %s' % (proc_name, next_packet)
-#                 answer = next_packet()
-#                 self.packet_queue.task_done()
-#                 self.result_queue.put(answer)
-#             except AttributeError as e:
-#                 print 'AttributeError: {0}'.format(e)
-#         return
-#
-#
-# class Packet(object):
-#
-#     """Process a packet from a pcap file
-#        Args:
-#            id: VLAN ID (-1 if none)
-#            data: packet data
-#     """
-#
-#     def __init__(self, gtp_version, gtp_message):
-#         """Class constructor
-#            Args:
-#                gtp_message: GTP message
-#         """
-#         self.gtp_version = gtp_version
-#         self.gtp_message = gtp_message
-#
-#     def __call__(self):
-#         return "{0} - {1}".format(self.gtp_version, self.gtp_message)
-#
-#     def __str__(self):
-#         return "{0} - {1}".format(self.gtp_version, self.gtp_message)
-
-
 class Analyzer(Process):
-    def __init__(self, vlan_id, task_queue, result_queue):
+
+    # def __init__(self, vlan_id, packets_queue, results_queue):
+    def __init__(self, vlan_id, packets_queue):
         Process.__init__(self)
         self.name = 'Process-{0}'.format(vlan_id)
-        self.task_queue = task_queue
-        self.result_queue = result_queue
-        self.counters = {}
+        self.vlan_id = int(vlan_id)
+        self.packets_queue = packets_queue
+        # self.results_queue = results_queue
+        self.results_dict = {self.vlan_id: {}}
 
     def run(self):
-        proc_name = self.name
+
         while True:
-            packet = self.task_queue.get()
+
+            packet = self.packets_queue.get()
+
             if packet is None:
                 # Poison pill means shutdown
-                print '%s: Exiting' % proc_name
-                self.task_queue.task_done()
+                print '%s: Exiting' % self.name
+                self.packets_queue.task_done()
+                # self.results_queue.put(self.results_dict)
                 break
-            if packet.gtp_message not in self.counters.keys():
-                self.counters[packet.gtp_message] = 0
-            self.counters[packet.gtp_message] += 1                
-            # print '%s: %s' % (proc_name, packet)
+
+            # Create a new dictionary for the couple (ip src, ip dst) if it does not exist yet
+            ips = (packet.src_ip, packet.dst_ip)
+            if ips not in self.results_dict[self.vlan_id].keys():
+                self.results_dict[self.vlan_id][ips] = {}
+
+            # Create a new counter for the given couple of ips and message type if it does not exist yet
+            if (packet.gtp_version, packet.gtp_message) not in self.results_dict[self.vlan_id][ips].keys():
+                msg = (packet.gtp_version, packet.gtp_message)
+                self.results_dict[self.vlan_id][ips][msg] = 0
+
+            # Count new message
             try:
-                print 'GTP message {0} count {1}'.format(messages['gtp'][packet.gtp_version][packet.gtp_message],
-                                                         self.counters[packet.gtp_message])
+                self.results_dict[self.vlan_id][ips][msg] += 1
             except KeyError:
-                print 'Unknown GTP message code {0}'.format(packet.gtp_message)
-            answer = packet()
-            self.task_queue.task_done()
-            self.result_queue.put(answer)
+                print 'KeyError'
+
+            # Signal task completed
+            self.packets_queue.task_done()
+
         return
 
 
 class Packet(object):
 
-    # def __init__(self, a, b):
-    #     self.a = a
-    #     self.b = b
+    # def __init__(self, gtp_version, gtp_message):
+    def __init__(self, pkt):
 
-    def __init__(self, gtp_version, gtp_message):
-        self.gtp_version = gtp_version
-        self.gtp_message = gtp_message
+        self.src_ip = ip2int(pkt.ip.src)
+        self.dst_ip = ip2int(pkt.ip.dst)
+        gtp = pkt.layers[4]
+        try:
+            self.gtp_version = int(gtp.version)
+        except AttributeError:
+            self.gtp_version = 1
+        self.gtp_message = int(gtp.message) if self.gtp_version == 1 else int(gtp.message_type)
 
     def __call__(self):
-        # time.sleep(0.1)  # pretend to take some time to do the work
-        # return '%s * %s = %s' % (self.a, self.b, self.a * self.b)
-        return '%s * %s = %s' % (self.gtp_version, self.gtp_message, self.gtp_version * self.gtp_message)
+        # return '%s * %s = %s' % (self.gtp_version, self.gtp_message, self.gtp_version * self.gtp_message)
+        return '%s, %s, %s, %s' % (self.src_ip, self.dst_ip, self.gtp_version, self.gtp_message)
 
-    def __str__(self):
-        # return '%s * %s' % (self.a, self.b)
-        return '%s * %s' % (self.gtp_version, self.gtp_message)
-    
+    # def __str__(self):
+    #     # return '%s * %s' % (self.gtp_version, self.gtp_message)
+    #     return '%s, %s' % (self.gtp_version, self.gtp_message)
+
+    def src_ip(self):
+        return self.src_ip
+
+    def dst_ip(self):
+        return self.dst_ip
+
     def gtp_version(self):
         return self.gtp_version
 
@@ -161,24 +134,25 @@ def mac_addr(address):
     return ':'.join(["%02X" % ord(x) for x in address]).strip()
 
 
-def inet_to_str(inet):
-    """Convert inet object to a string
-        Args:
-            inet (inet struct): inet network address
-        Returns:
-            str: Printable/readable IP address
-    """
-    # First try ipv4 and then ipv6
-    # Commented out as inet_ntop only exists in unix version of socket
-    # try:
-    #     return socket.inet_ntop(socket.AF_INET, inet)
-    # except ValueError:
-    #     return socket.inet_ntop(socket.AF_INET6, inet)
+# def inet_to_str(inet):
+#     """Convert inet object to a string
+#         Args:
+#             inet (inet struct): inet network address
+#         Returns:
+#             str: Printable/readable IP address
+#     """
+#     try:
+#         return socket.inet_ntoa(inet)
+#     except ValueError:
+#         sys.exit(2)
 
-    try:
-        return socket.inet_ntoa(inet)
-    except ValueError:
-        sys.exit(2)
+
+def ip2int(addr):
+    return struct.unpack("!I", socket.inet_aton(addr))[0]
+
+
+def int2ip(addr):
+    return socket.inet_ntoa(struct.pack("!I", addr))
 
 
 def process_pcap(pcap):
@@ -186,10 +160,16 @@ def process_pcap(pcap):
        Args:
            pcap: dpkt pcap reader object (dpkt.pcap.Reader)
     """
+    # Store current time
+    ts = time()
+
     # Establish communication queues
     processes = {}
     packets_to_process = {}
-    results = {}
+    results = Queue()
+
+    # manager = Manager()
+    # results = manager.dict()
 
     for pkt in pcap:
 
@@ -199,27 +179,30 @@ def process_pcap(pcap):
             vlan_id = pkt.layers[1].id
 
             # Obtain GTP version and message
-            gtp = pkt.layers[4]
+            # gtp = pkt.layers[4]
 
             # Create queues for the corresponding VLAN if they do not exist
             if vlan_id not in packets_to_process.keys():
                 packets_to_process[vlan_id] = JoinableQueue()
-                results[vlan_id] = Queue()
+                # packets_to_process[vlan_id] = Queue()
+                # results[vlan_id] = Queue()
+                # results[vlan_id] = {}
 
             # Create and start processes for the corresponding VLAN if they do not exist
             if vlan_id not in processes.keys():
                 # processes[vlan_id] = Analyzer(vlan_id, packets_to_process[vlan_id], results[vlan_id])
                 print 'Creating Analyzer for VLAN id {0}'.format(vlan_id)
-                processes[vlan_id] = Analyzer(vlan_id, packets_to_process[vlan_id], results[vlan_id])
+                # processes[vlan_id] = Analyzer(vlan_id, packets_to_process[vlan_id], results)
+                processes[vlan_id] = Analyzer(vlan_id, packets_to_process[vlan_id])
                 processes[vlan_id].start()
 
-            # Add package to queue for the corresponding VLAN
-            if gtp.version == '1':
-                # packets_to_process[vlan_id].put(Packet(gtp.version, gtp.message))
-                packets_to_process[vlan_id].put(Packet(int(gtp.version), int(gtp.message)))
-            elif gtp.version == '2':
-                # packets_to_process[vlan_id].put(Packet(gtp.version, gtp.message_type))
-                packets_to_process[vlan_id].put(Packet(int(gtp.version), int(gtp.message_type)))
+            # # Add package to queue for the corresponding VLAN
+            # if gtp.version == '1':
+            #     packets_to_process[vlan_id].put(Packet(int(gtp.version), int(gtp.message)))
+            # elif gtp.version == '2':
+            #     packets_to_process[vlan_id].put(Packet(int(gtp.version), int(gtp.message_type)))
+
+            packets_to_process[vlan_id].put(Packet(pkt))
 
         except AttributeError as e:
             print 'AttributeError: {0}'.format(e)
@@ -228,13 +211,25 @@ def process_pcap(pcap):
             print 'KeyError: {0}'.format(e)
 
     # Add a poison pill for each consumer
-    for i in processes.keys:
+    for i in processes.keys():
         packets_to_process[i].put(None)
 
     # Wait for all of the tasks to finish
-    for i in processes.keys:
+    for i in processes.keys():
         packets_to_process[i].join()
 
+    # Print time taken to process all packets
+    print('Took {0}'.format(time() - ts))
+
+    # Print results
+    # for vlan in results.keys():
+    #     for ips in results[vlan].keys():
+    #         for msg in results[vlan][ips].keys():
+    #             print("src ip: {0}, dst ip: {1}, gtp v{2}, message: {3} count: {4}".
+    #                   format(ips[0], ips[1], msg[0], msg[1], results[vlan][ips][msg]))
+    # print the output
+    while not results.empty():
+        print(results.get())
 
 def parse_options(argv):
     """
