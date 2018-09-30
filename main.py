@@ -50,9 +50,11 @@ class Analyzer(Process):
         self.vlan_id = int(vlan_id)
         self.packets_queue = packets_queue
         self.results_queue = results_queue
-        self.results_dict = {self.vlan_id: {}}
+        # self.results_dict = {self.vlan_id: {}}
 
     def run(self):
+
+        results_dict = {self.vlan_id: {}}
 
         while True:
 
@@ -62,24 +64,27 @@ class Analyzer(Process):
                 # Poison pill means shutdown
                 print '%s: Exiting' % self.name
                 self.packets_queue.task_done()
-                self.results_queue.put(self.results_dict)
+                self.results_queue.put(results_dict)
                 break
 
-            # Create a new dictionary for the couple (ip src, ip dst) if it does not exist yet
-            ips = (packet.src_ip, packet.dst_ip)
-            if ips not in self.results_dict[self.vlan_id].keys():
-                self.results_dict[self.vlan_id][ips] = {}
+            if packet.gtp_message in messages['gtp'][packet.gtp_version].keys():
 
-            # Create a new counter for the given couple of ips and message type if it does not exist yet
-            if (packet.gtp_version, packet.gtp_message) not in self.results_dict[self.vlan_id][ips].keys():
+                # Create a new dictionary for the couple (ip src, ip dst) if it does not exist yet
+                ips = (packet.src_ip, packet.dst_ip)
+                if ips not in results_dict[self.vlan_id].keys():
+                    results_dict[self.vlan_id][ips] = {}
+
+                # Create a new counter for the given couple of ips and message type if it does not exist yet
                 msg = (packet.gtp_version, packet.gtp_message)
-                self.results_dict[self.vlan_id][ips][msg] = 0
+                if msg not in results_dict[self.vlan_id][ips].keys():
+                    results_dict[self.vlan_id][ips][msg] = 0
 
-            # Count new message
-            try:
-                self.results_dict[self.vlan_id][ips][msg] += 1
-            except KeyError:
-                print 'KeyError'
+                # Count new message
+                try:
+                    results_dict[self.vlan_id][ips][msg] += 1
+                    print 'Packet processed, keys: {0},{1},{2}'.format(self.vlan_id, ips, msg)
+                except KeyError:
+                    print 'KeyError, keys: {0},{1},{2}'.format(self.vlan_id, ips, msg)
 
             # Signal task completed
             self.packets_queue.task_done()
@@ -165,7 +170,7 @@ def process_pcap(pcap):
     # Establish communication queues
     processes = {}
     packets_to_process = {}
-    results = Queue()
+    results = JoinableQueue()
 
     # manager = Manager()
     # results = manager.dict()
@@ -176,9 +181,6 @@ def process_pcap(pcap):
 
             # Obtain VLAN id
             vlan_id = pkt.layers[1].id
-
-            # Obtain GTP version and message
-            # gtp = pkt.layers[4]
 
             # Create queues for the corresponding VLAN if they do not exist
             if vlan_id not in packets_to_process.keys():
@@ -220,24 +222,25 @@ def process_pcap(pcap):
     # Print time taken to process all packets
     print('Took {0}'.format(time() - ts))
 
+    # DEBUG
+    print('Results available? {0}'.format(not results.empty()))
+
     # Print results
-    # for vlan in results.keys():
-    #     for ips in results[vlan].keys():
-    #         for msg in results[vlan][ips].keys():
-    #             print("src ip: {0}, dst ip: {1}, gtp v{2}, message: {3} count: {4}".
-    #                   format(ips[0], ips[1], msg[0], msg[1], results[vlan][ips][msg]))
-    # print the output
     while not results.empty():
-        # print(results.get())
-        d = results.get()
-        for k, v in d.iteritems():
-            for (src, dst), m in v.iteritems():
-                for (gtp_v, gtp_m), count in m.iteritems():
-                    try:
-                        print("vlan id: {0}, src ip: {1}, dst ip: {2}, gtp v{3} message: {4}, count: {5}".
-                              format(k, int2ip(src), int2ip(dst), gtp_v, messages['gtp'][gtp_v][gtp_m], count))
-                    except:
-                        pass
+        print(results.get())
+        # d = results.get()
+        # for k, v in d.iteritems():
+        #     print("vlan id: {0}".format(k))
+        #     for (src, dst), m in v.iteritems():
+        #         print("\tsrc ip: {0}, dst ip: {1}".format(int2ip(src), int2ip(dst)))
+        #         for (gtp_v, gtp_m), count in m.iteritems():
+        #             try:
+        #                 print("\t\tgtp v{0} message: {1}, count: {2}".
+        #                       format(gtp_v, messages['gtp'][gtp_v][gtp_m], count))
+        #             except KeyError:
+        #                 print '\t\tKeyError accessing messages names, keys: {0},{1}'.format(gtp_v, gtp_m)
+
+    print('...Finished')
 
 
 def parse_options(argv):
