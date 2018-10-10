@@ -3,21 +3,19 @@
 """
 Use PyShark to read pcap files or traffic and analyze them
 """
-import datetime
-# import multiprocessing as mp
+import csv
 from multiprocessing import Process, Manager, JoinableQueue, Queue, cpu_count
-# import queue # imported for using queue.Empty exception
 from optparse import OptionParser
+import os
 import pyshark
-# from Queue import Empty, Full
 import socket
 import struct
 import sys
-from time import time, sleep
+from time import time
 reload(sys)
 sys.setdefaultencoding('utf8')
 
-# from dpkt.compat import compat_ord
+dict_nodes = {}
 
 #GTPV1
 # CREATE_PDP_REQUEST   = "16" #"0x10"
@@ -180,22 +178,40 @@ def int2ip(addr):
     return socket.inet_ntoa(struct.pack("!I", addr))
 
 
+def print_results(results):
+    """
+    Prints results from dictionaries stored in a JoinableQueue
+    :param results: Object of type JoinableQueue
+    :return:
+    """
+    global dict_nodes
+
+    while not results.empty():
+        d = results.get()
+        for v in d.keys():
+            print "VLAN id {0}".format(v)
+            for i in d[v].keys():
+                src = int2ip(i[0])
+                dst = int2ip(i[1])
+                if src in dict_nodes.keys():
+                    src = dict_nodes[src]
+                if dst in dict_nodes.keys():
+                    dst = dict_nodes[dst]
+                print "\t{0}-{1}".format(src, dst)
+                for m in d[v][i]:
+                    print "\t\t{0}: {1}".format(messages['gtp'][m[0]][m[1]], d[v][i][m])
+
+
 def process_pcap(pcap):
     """Process each pcap packet
        Args:
            pcap: dpkt pcap reader object (dpkt.pcap.Reader)
     """
-    # Store current time
-    ts = time()
-
-    # with Manager() as m:
 
     # Establish communication queues
     tasks = {}
     packets_to_process = {}
     results = JoinableQueue()
-    # results = m.dict()
-    # results = {}
 
     for pkt in pcap:
 
@@ -238,18 +254,11 @@ def process_pcap(pcap):
         packets_to_process[i].join()
 
     results.task_done()
-    # results.join()
-
-    # Print time taken to process all packets
-    print('Took {0}'.format(time() - ts))
 
     # Print results
-    # TODO: Este diccionario aquí está vacío!
-    # print results
-    while not results.empty():
-        print results.get()
-
-    print('...Finished')
+    print_results(results)
+    # while not results.empty():
+    #     print results.get()
 
 
 def parse_options(argv):
@@ -259,16 +268,30 @@ def parse_options(argv):
     :return: List of options after parsing
     """
     parser = OptionParser(usage="usage: %prog filename.json [-i input_dir] [-o output_dir]", version="%prog 0.1")
+    parser.add_option("-n", "--nodesfile", dest="nodes", help="Input nodes.csv file", default="nodes.csv")
     parser.add_option("-i", "--inputport", dest="iport", help="Input port/s", default=None)
     parser.add_option("-f", "--inputfile", dest="ifile", help="Input pcap file/s", default=None)
 
     options, unused_args = parser.parse_args(argv)
 
     errmsg = ''
+    global dict_nodes
 
     if options.iport is None and options.ifile is None:
         parser.print_help()
         sys.exit(2)
+
+    if options.nodes:
+        # Check nodes file exists
+        if os.path.isfile(options.nodes):
+            with open(options.nodes, 'rb') as csvfile:
+                reader = csv.DictReader(csvfile, delimiter=';', quoting=csv.QUOTE_NONE)
+                for row in reader:
+                    dict_nodes[row['ip-address']] = row['network-element-name']
+                    # DEBUG
+                    # print(row['ip-address'], row['network-element-name'])
+        else:
+            errmsg += 'Input file {0} cannot be found\n'.format(options.nodes)
 
     if errmsg:
         print errmsg
@@ -284,8 +307,14 @@ def main(argv):
     :param argv: list of arguments (program name not included)
     :return: None
     """
+
+    # Store current time
+    ts = time()
+
     # Parse arguments
     options = parse_options(argv)
+
+    print('Processing file {0}...'.format(options.ifile))
 
     # Determine the number of tasks that can be run in parallel
     num_proc = cpu_count()
@@ -293,6 +322,11 @@ def main(argv):
     if options.ifile:
         cap = pyshark.FileCapture(options.ifile)
         process_pcap(cap)
+
+    print('...Finished')
+
+    # Print time taken to process all packets
+    print('It took {0}'.format(time() - ts))
 
 
 """ Entry point """
