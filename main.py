@@ -4,7 +4,9 @@
 Use PyShark to read pcap files or traffic and analyze them
 """
 import csv
-from multiprocessing import Process, Manager, JoinableQueue, Queue, cpu_count
+import matplotlib.pyplot as plt
+from multiprocessing import Process, JoinableQueue, cpu_count
+import numpy as np
 from optparse import OptionParser
 import os
 import pyshark
@@ -16,22 +18,6 @@ reload(sys)
 sys.setdefaultencoding('utf8')
 
 dict_nodes = {}
-
-#GTPV1
-# CREATE_PDP_REQUEST   = "16" #"0x10"
-# CREATE_PDP_RESPONSE  = "17" #"0x11"
-# UPDATE_PDP_REQUEST   = "18" #"0x12"
-# UPDATE_PDP_RESPONSE  = "19" #"0x13"
-# DELETE_PDP_REQUEST   = "20" #"0x14"
-# DELETE_PDP_RESPONSE  = "21" #"0x15"
-
-#GTPV2
-# CREATE_SESSION_REQUEST   = "32" #"0x20"
-# CREATE_SESSION_RESPONSE  = "33" #"0x21"
-# MODIFY_BEARER_REQUEST    = "34" #"0x22"
-# MODIFY_BEARER_RESPONSE   = "35" #"0x23"
-# DELETE_SESSION_REQUEST   = "36" #"0x24"
-# DELETE_SESSION_RESPONSE  = "37" #"0x25"
 
 messages = {'gtp': {1: {16: 'CreatePDPContextRequest', 17: 'CreatePDPContextResponse',
                         18: 'UpdatePDPContextRequest', 19: 'UpdatePDPContextResponse',
@@ -146,30 +132,6 @@ class Packet(object):
         return self.gtp_message
 
 
-def mac_addr(address):
-    """
-        Convert a MAC address to a readable/printable string
-        Args:
-            address (str): a MAC address in hex form (e.g. '\x01\x02\x03\x04\x05\x06')
-        Returns:
-            str: Printable/readable MAC address
-    """
-    return ':'.join(["%02X" % ord(x) for x in address]).strip()
-
-
-# def inet_to_str(inet):
-#     """Convert inet object to a string
-#         Args:
-#             inet (inet struct): inet network address
-#         Returns:
-#             str: Printable/readable IP address
-#     """
-#     try:
-#         return socket.inet_ntoa(inet)
-#     except ValueError:
-#         sys.exit(2)
-
-
 def ip2int(addr):
     return struct.unpack("!I", socket.inet_aton(addr))[0]
 
@@ -185,6 +147,9 @@ def print_results(results):
     :return:
     """
     global dict_nodes
+    overall_values = {}
+    label = []
+    values = []
 
     while not results.empty():
         d = results.get()
@@ -200,6 +165,30 @@ def print_results(results):
                 print "\t{0}-{1}".format(src, dst)
                 for m in d[v][i]:
                     print "\t\t{0}: {1}".format(messages['gtp'][m[0]][m[1]], d[v][i][m])
+                    if m not in overall_values.keys():
+                        overall_values[m] = 0
+                    overall_values[m] += d[v][i][m]
+
+    # Create list of labels for the X-axis
+    for v in messages['gtp'].keys():
+        for m in messages['gtp'][v]:
+            label.append(messages['gtp'][v][m])
+
+    # Create list of values for the Y-axis
+    for v in messages['gtp'].keys():
+        for m in messages['gtp'][v]:
+            # val = overall_values[(v, m)] if m in overall_values.keys() else 0
+            values.append(overall_values[(v, m)] if (v, m) in overall_values.keys() else 0)
+
+    # this is for plotting purpose
+    index = np.arange(len(label))
+    # index = overall_values.keys()
+    plt.bar(index, values)
+    plt.xlabel('GTP Message', fontsize=10)
+    plt.ylabel('No of Messages', fontsize=10)
+    plt.xticks(index, label, fontsize=10, rotation=45)
+    plt.title('Number of messages - Sum total')
+    plt.show()
 
 
 def process_pcap(pcap):
