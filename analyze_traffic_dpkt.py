@@ -24,48 +24,22 @@ PORT_GTP_C = 2123
 PORT_DIAMETER = 3868
 PORT_S1AP = 36412
 
-# Messages
-messages = {'gtp': {1: {1: 'EchoRequest', 2: 'EchoResponse',
-                        16: 'CreatePDPContextRequest', 17: 'CreatePDPContextResponse',
-                        18: 'UpdatePDPContextRequest', 19: 'UpdatePDPContextResponse',
-                        20: 'DeletePDPContextRequest', 21: 'DeletePDPContextResponse'},
-                    2: {32: 'CreateSessionRequest', 33: 'CreateSessionResponse',
-                        34: 'ModifyBearerRequest', 35: 'ModifyBearerResponse',
-                        36: 'DeleteSessionRequest', 37: 'DeleteSessionResponse',
-                        170: 'ReleaseAccessBearersRequest', 171: 'ReleaseAccessBearersResponse'}},
-            'diameter': {1: 'Credit-Control Request', 0: 'Credit-Control Answer'}}
 
-# Create the list of GTP messages
-labels_gtp = []
-for v in messages['gtp'].keys():
-    for i, m in enumerate(messages['gtp'][v]):
-        if i % 2:
-            labels_gtp.append(messages['gtp'][v][m][:-8])
+# Messages
+messages = {'GTP': {1: 'EchoRequest', 2: 'EchoResponse',
+                    16: 'CreatePDPContextRequest', 17: 'CreatePDPContextResponse',
+                    18: 'UpdatePDPContextRequest', 19: 'UpdatePDPContextResponse',
+                    20: 'DeletePDPContextRequest', 21: 'DeletePDPContextResponse'},
+            'GTPv2': {32: 'CreateSessionRequest', 33: 'CreateSessionResponse',
+                      34: 'ModifyBearerRequest', 35: 'ModifyBearerResponse',
+                      36: 'DeleteSessionRequest', 37: 'DeleteSessionResponse',
+                      170: 'ReleaseAccessBearersRequest', 171: 'ReleaseAccessBearersResponse'},
+            'DIAMETER': {1: 'Credit-Control Request', 0: 'Credit-Control Answer'},
+            'S1AP': {9: 'InitialContextSetupRequest', 3: 'InitialContextSetupRequest'},
+            'MAP': {'2': 'updateLocation', '3': 'cancelLocation', '7': 'insertSubscriberData',
+                    '8': 'deleteSubscriberData', '23': 'updateGprsLocation', '56': 'sendAuthenticationInfo'}}
 
 dict_nodes = {}
-
-
-# class Analyzer(Process):
-#
-#     def __init__(self, task_queue, result_queue):
-#         Process.__init__(self)
-#         self.task_queue = task_queue
-#         self.result_queue = result_queue
-#
-#     def run(self):
-#         proc_name = self.name
-#         while True:
-#             next_task = self.task_queue.get()
-#             if next_task is None:
-#                 # Poison pill means shutdown
-#                 print('{}: Exiting'.format(proc_name))
-#                 self.task_queue.task_done()
-#                 break
-#             print('{}: {}'.format(proc_name, next_task))
-#             answer = next_task()
-#             self.task_queue.task_done()
-#             self.result_queue.put(answer)
-#         return
 
 
 class Analyzer(Process):
@@ -82,7 +56,8 @@ class Analyzer(Process):
         :param results_queue: Queue of results
         """
         Process.__init__(self)
-        self.name = 'Process-{}'.format(vlan_id)
+        self.name = 'Analyzer_{}_{}'.format(protocol, vlan_id) if vlan_id > 0 else 'Analyzer_{}'.format(protocol)
+        # self.name = 'Process-{}'.format(vlan_id)
         self.vlan_id = vlan_id
         self.protocol = protocol
         self.packets_queue = packets_queue
@@ -105,7 +80,8 @@ class Analyzer(Process):
                 self.results_queue.put(d)
                 break
 
-            if packet.message_code in messages['gtp'][packet.gtp_v].keys():
+            # if packet.message_code in messages['gtp'][packet.gtp_v].keys():
+            if packet.message_code in messages[packet.protocol].keys():
 
                 # Create a new dictionary for the couple (ip src, ip dst) if it does not exist yet
                 ips = (packet.src_ip, packet.dst_ip)
@@ -113,7 +89,8 @@ class Analyzer(Process):
                     self.dict[ips] = {}
 
                 # Create a new counter for the given couple of ips and message type if it does not exist yet
-                msg = (packet.gtp_v, packet.message_code)
+                # msg = (packet.gtp_v, packet.message_code)
+                msg = (packet.protocol, packet.message_code)
                 if msg not in self.dict[ips].keys():
                     self.dict[ips][msg] = 0
 
@@ -151,6 +128,8 @@ class Packet(object):
             self.ts = str(datetime.datetime.utcfromtimestamp(ts))
             print('Timestamp: {}'.format(self.ts))
 
+            eth = dpkt.ethernet.Ethernet(pkt)
+
             # Unpack the Ethernet frame (mac src/dst, ethertype)
             eth = dpkt.ethernet.Ethernet(pkt)
             print('Ethernet Frame: ', Packet.mac_addr(eth.src), Packet.mac_addr(eth.dst), eth.type)
@@ -162,9 +141,13 @@ class Packet(object):
             # Pulling out src, dst, length, fragment info, TTL, and Protocol
             ip = eth.data
 
-            # Obtain IP source and destionation addresses
+            # Obtain IP source and destination addresses
             self.src_ip = ip.src
             self.dst_ip = ip.dst
+
+            # Default values
+            self.protocol = None
+            self.message_code = None
 
             # UDP
             if isinstance(ip.data, dpkt.udp.UDP):
@@ -177,8 +160,8 @@ class Packet(object):
                     self.gtp_v = Packet.get_gtp_version(int(upd_data_list[0], 16))
                     self.protocol = 'GTP' if self.gtp_v == 1 else 'GTPv2'
                     self.message_code = int(upd_data_list[1], 16)
-                    self.message_text = messages['gtp'][self.gtp_v][int(upd_data_list[1], 16)]
-                    print('This is GTP-C {}'.format(self.protocol))
+                    self.message_text = messages[self.protocol][int(upd_data_list[1], 16)]
+                    print('This is GTP-C version {}'.format(self.gtp_v))
 
                 # GTP-U
                 elif udp.sport == PORT_GTP_U or udp.dport == PORT_GTP_U:
@@ -186,7 +169,7 @@ class Packet(object):
                     self.gtp_v = Packet.get_gtp_version(int(upd_data_list[0], 16))
                     self.protocol = 'GTP' if self.gtp_v == 1 else 'GTPv2'
                     self.message_code = int(upd_data_list[1], 16)
-                    self.message_text = messages['gtp'][self.gtp_v][self.message_code]
+                    self.message_text = messages[self.protocol][self.message_code]
                     print('This is GTP-U version {}'.format(self.gtp_v))
 
             # TCP
@@ -199,32 +182,40 @@ class Packet(object):
                     tcp_data_list = ["%02X" % x for x in tcp.data]
                     self.protocol = 'DIAMETER'
                     self.message_code = Packet.get_diam_message_code(int(tcp_data_list[0], 16))
-                    self.message_text = messages['diameter'][self.message_code]
+                    self.message_text = messages[self.protocol][self.message_code]
                     print('This is Diameter message {}'.format(self.message_text))
 
             # SCTP
             elif isinstance(ip.data, dpkt.sctp.SCTP):
-            # elif ip.p == 132:        # This is SCTP
 
                 sctp = ip.data
 
-                # sctp_data_list = ["%02X" % x for x in sctp.data]
-
                 # S1AP
                 if sctp.sport == PORT_S1AP or sctp.dport == PORT_S1AP:
-                    # sctp_data_list = ["%02X" % x for x in sctp.data]
-                    chunk_1 = scp.data[0]
-                    chunk_2 = scp.data[1]
+                    # PENDING: Filter out packets SCTP - SACK as pkt #15
                     self.protocol = 'S1AP'
-                    # self.message_code =
-                    # self.message_code = Packet.get_diam_message_code(int(tcp_data_list[0], 16))
-                    # self.message_text = messages['S1AP'][self.message_code]
+                    self.message_code = Packet.get_s1ap_message_code(sctp.data[1].data)
+                    self.message_text = messages[self.protocol][self.message_code]
                     print('This is S1AP message {}'.format(self.message_text))
+                    
+                else:
+                    # Assume MAP
+                    self.protocol = 'MAP'
+                    self.message_code = Packet.g
+                    self.message_text = messages[self.protocol][self.message_code]
+                    print('This is MAP message {}'.format(self.message_text))
 
         except KeyError as ex:
-            # return 'KeyError: {}'.format(ex)
-            raise KeyError('Message type {} not implemented'.format(upd_data_list[1]))
-            # print('KeyError: {}'.format(ex))
+            print("Exception is: {}".format(ex))
+            print('Message type not implemented at packet #{}, protocol is {}'.format(self.num, self.protocol))
+
+        except IndexError as ex:
+            print("Exception is: {}".format(ex))
+            print("Protocol mismatch at packet #{}, protocol seems to be {}".format(self.num, self.protocol))
+
+        except AttributeError as ex:
+            print("Exception is: {}".format(ex))
+            print("Cannot decode protocol at packet #{}, protocol seems to be {}".format(self.num, self.protocol))
 
         except Exception as ex:
             print('Exception: {}'.format(ex))
@@ -234,8 +225,6 @@ class Packet(object):
         String to print when calling print()
         :return:
         """
-        # return '\tPkt num: {}\n\tSource: {}\n\tDestination: {}\n\tGTP version {}\n\tGTP message {}'. \
-        #     format(self.num, Packet.inet_to_str(self.src_ip), Packet.inet_to_str(self.dst_ip), self.gtp_v, self.message_text)
         return '\tPkt num: {}\n\tSource: {}\n\tDestination: {}\n\tProtocol: {}'. \
             format(self.num, Packet.inet_to_str(self.src_ip), Packet.inet_to_str(self.dst_ip), self.protocol)
 
@@ -246,10 +235,20 @@ class Packet(object):
         :param flags:
         :return:
         """
-        f1b = Packet.extract(flags, 1, 0)
+        f1b = Packet.extract_bits(flags, 1, 0)
 
         return f1b
 
+    @staticmethod
+    def get_s1ap_message_code(data):
+        """
+        Determine the S1AP procedure code
+        :param data:
+        :return:
+        """
+        thebytes = data[17:20]
+        theval = int.from_bytes(thebytes, byteorder='big')
+        return theval
 
     @staticmethod
     def get_gtp_version(flags):
@@ -258,50 +257,32 @@ class Packet(object):
         :param flags:
         :return:
         """
-        f3b = Packet.extract(flags, 3, 0)
+        f3b = Packet.extract_bits(flags, 3, 0)
 
         return f3b
 
-        # if flags == '32':
-        #     return 1
-        # elif flags == '48':
-        #     return 2
-        # else:
-        #     return -1
 
     @staticmethod
-    def extract(num, k, p):
+    def extract_bits(num, k, p):
         """
-        Extract k bits from p position
+        Extract k bits from p position from a given number (int)
         :param num: Number
         :param k: Number of bits to extract
         :param p: Initial position
         :return: Extracted value as integer
         """
-        binary = format(num, '08b')
-
-        # extr = ((1 << k) - 1) & (mybin >> (p - 1))
-        # return extr
-        # return ((1 << k) - 1) & (mybin >> (p - 1))
-
-        # # convert number into binary first
-        # binary = bin(num)
-        #
-        # # remove first two characters
-        # binary = binary[2:]
-        #
-        # end = len(binary) - p
-        # start = end - k + 1
+        # num_bin = format(num, '08b') if isinstance(num, int) else num
+        num_bin = format(num, '08b')
 
         start = p
         end = p + k -1
 
         # extract k  bit sub-string
-        kBitSubStr = binary[start: end + 1]
+        subs = num_bin[start: end + 1]
 
         # convert extracted sub-string into decimal again
-        return int(kBitSubStr, 2)
-        # print(int(kBitSubStr, 2))
+        return int(subs, 2)
+        # print(int(subs, 2))
 
     @staticmethod
     def mac_addr(address):
@@ -493,7 +474,7 @@ def print_results(results, base):
 
 def process_pcap(pcap, base):
     """
-    Process a pcap file
+    Process a pcap file with multiprocessing: a process for each unique couple of [vlan_id, protocol]
     :param pcap: pcap file as read by pyshark module
     :param base: base name of the file being processed
     :return: None

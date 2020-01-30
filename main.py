@@ -5,6 +5,7 @@ Use PyShark to read pcap files or traffic and analyze them
 """
 import csv
 import matplotlib.pyplot as plt
+from matplotlib.backends.backend_pdf import PdfPages
 from multiprocessing import Process, JoinableQueue, cpu_count
 import numpy as np
 from optparse import OptionParser
@@ -26,6 +27,14 @@ messages = {'gtp': {1: {16: 'CreatePDPContextRequest', 17: 'CreatePDPContextResp
                         34: 'ModifyBearerRequest', 35: 'ModifyBearerResponse',
                         36: 'DeleteSessionRequest', 37: 'DeleteSessionResponse'}}}
 
+labels = []
+
+# Create the list of GTP messages
+for v in messages['gtp'].keys():
+    for i, m in enumerate(messages['gtp'][v]):
+        if i % 2:
+            labels.append(messages['gtp'][v][m][:-8])
+
 
 class Analyzer(Process):
 
@@ -36,7 +45,49 @@ class Analyzer(Process):
         self.vlan_id = int(vlan_id)
         self.packets_queue = packets_queue
         self.results_queue = results_queue
+        self.sum_values = {}
         self.dict = {}
+
+    # def print_barchar(self):
+    #
+    #     global labels, messages
+    #
+    #     # Compute the number of messages of each type
+    #     for k in self.dict.keys():
+    #         for m in self.dict[k]:
+    #             if m not in self.sum_values.keys():
+    #                 self.sum_values[m] = 0
+    #             self.sum_values[m] += self.dict[k][m]
+    #
+    #     requests = []
+    #     responses = []
+    #
+    #     for v in messages['gtp'].keys():
+    #         for i, m in enumerate(messages['gtp'][v]):
+    #             if i % 2:
+    #                 responses.append(self.sum_values[(v, m)] if (v, m) in self.sum_values.keys() else 0)
+    #             else:
+    #                 requests.append(self.sum_values[(v, m)] if (v, m) in self.sum_values.keys() else 0)
+    #
+    #     # This is for plotting purpose
+    #     ind = np.arange(len(labels))  # the x locations for the groups
+    #     width = 0.35  # the width of the bars
+    #
+    #     fig, ax = plt.subplots()
+    #     rects1 = ax.bar(ind - width / 2, requests, width, color='SkyBlue', label='Requests')
+    #     rects2 = ax.bar(ind + width / 2, responses, width, color='IndianRed', label='Responses')
+    #
+    #     # Add some text for labels, title and custom x-axis tick labels, etc.
+    #     ax.set_ylabel('No of Messages')
+    #     ax.set_title('Number of messages - VLAN id {0}'.format(self.vlan_id))
+    #     ax.set_xticks(ind)
+    #     ax.set_xticklabels(labels, rotation=45)
+    #     ax.legend()
+    #
+    #     autolabel(ax, rects1, "left")
+    #     autolabel(ax, rects2, "right")
+    #
+    #     plt.show()
 
     def run(self):
 
@@ -49,16 +100,11 @@ class Analyzer(Process):
                 print '%s: Exiting' % self.name
                 self.packets_queue.task_done()
                 d = {self.vlan_id: self.dict}
-                # self.results_queue.put(self.dict)
+                # self.print_barchar()
                 self.results_queue.put(d)
                 break
 
             if packet.gtp_message in messages['gtp'][packet.gtp_version].keys():
-
-                # # DEBUG
-                # self.dict[1] = '1'
-                # self.dict['2'] = 2
-                # self.dict[0.25] = None
 
                 # Create a new dictionary for the couple (ip src, ip dst) if it does not exist yet
                 ips = (packet.src_ip, packet.dst_ip)
@@ -140,21 +186,133 @@ def int2ip(addr):
     return socket.inet_ntoa(struct.pack("!I", addr))
 
 
-def print_results(results):
+def autolabel(ax, rects, xpos='center'):
+    """
+    Attach a text label above each bar in *rects*, displaying its height.
+
+    *xpos* indicates which side to place the text w.r.t. the center of
+    the bar. It can be one of the following {'center', 'right', 'left'}.
+    """
+
+    xpos = xpos.lower()  # normalize the case of the parameter
+    ha = {'center': 'center', 'right': 'left', 'left': 'right'}
+    offset = {'center': 0.5, 'right': 0.57, 'left': 0.43}  # x_txt = x + w*off
+
+    for rect in rects:
+        height = rect.get_height()
+        ax.text(rect.get_x() + rect.get_width()*offset[xpos], 1.01*height,
+                '{}'.format(height), ha=ha[xpos], va='bottom')
+
+
+def create_barchart_vlan(vlan_id, results):
+    """
+    Creates a plot of type bar chart to display number of messages by VLAN
+    :param vlan_id: 
+    :param results: 
+    :return: Figure 
+    """
+
+    global labels, messages
+
+    sum_values = {}
+
+    # Compute the number of messages of each type
+    for k in results.keys():
+        for m in results[k].keys():
+            if m not in sum_values.keys():
+                sum_values[m] = 0
+            sum_values[m] += results[k][m]
+
+    requests = []
+    responses = []
+
+    for v in messages['gtp'].keys():
+        for i, m in enumerate(messages['gtp'][v]):
+            if i % 2:
+                responses.append(sum_values[(v, m)] if (v, m) in sum_values.keys() else 0)
+            else:
+                requests.append(sum_values[(v, m)] if (v, m) in sum_values.keys() else 0)
+
+    # This is for plotting purpose
+    ind = np.arange(len(labels))  # the x locations for the groups
+    width = 0.35  # the width of the bars
+
+    fig, ax = plt.subplots()
+    fig.suptitle = vlan_id
+    rects1 = ax.bar(ind - width / 2, requests, width, color='SkyBlue', label='Requests')
+    rects2 = ax.bar(ind + width / 2, responses, width, color='IndianRed', label='Responses')
+
+    # Add some text for labels, title and custom x-axis tick labels, etc.
+    ax.set_ylabel('Number of messages')
+    ax.set_title('VLAN id {0}'.format(vlan_id))
+    ax.set_xticks(ind)
+    ax.set_xticklabels(labels, rotation=45)
+    ax.legend()
+
+    autolabel(ax, rects1, "left")
+    autolabel(ax, rects2, "right")
+    
+    # plt.show()
+    
+    return fig
+
+
+def create_barchart_sum(sum_values):
+
+    global labels, messages
+
+    requests = []
+    responses = []
+
+    for v in messages['gtp'].keys():
+        for i, m in enumerate(messages['gtp'][v]):
+            if i % 2:
+                responses.append(sum_values[(v, m)] if (v, m) in sum_values.keys() else 0)
+            else:
+                requests.append(sum_values[(v, m)] if (v, m) in sum_values.keys() else 0)
+
+    # This is for plotting purpose
+    ind = np.arange(len(labels))  # the x locations for the groups
+    width = 0.35  # the width of the bars
+
+    fig, ax = plt.subplots()
+    fig.suptitle = "Sum Total"
+    rects1 = ax.bar(ind - width / 2, requests, width, color='SkyBlue', label='Requests')
+    rects2 = ax.bar(ind + width / 2, responses, width, color='IndianRed', label='Responses')
+
+    # Add some text for labels, title and custom x-axis tick labels, etc.
+    ax.set_ylabel('Number of messages')
+    ax.set_title('Sum total')
+    ax.set_xticks(ind)
+    ax.set_xticklabels(labels, rotation=45)
+    ax.legend()
+
+    autolabel(ax, rects1, "left")
+    autolabel(ax, rects2, "right")
+
+    # plt.show()
+
+
+def print_results(results, base):
     """
     Prints results from dictionaries stored in a JoinableQueue
     :param results: Object of type JoinableQueue
+    :param base: Base name of the file being processed
     :return:
     """
     global dict_nodes
     overall_values = {}
-    label = []
-    values = []
+    global labels
+
+    # The PDF document
+    pdf_pages = PdfPages('{0}.pdf'.format(base))
 
     while not results.empty():
         d = results.get()
         for v in d.keys():
             print "VLAN id {0}".format(v)
+            pdf_pages.savefig(create_barchart_vlan(v, d[v]))
+            plt.close()
             for i in d[v].keys():
                 src = int2ip(i[0])
                 dst = int2ip(i[1])
@@ -169,34 +327,19 @@ def print_results(results):
                         overall_values[m] = 0
                     overall_values[m] += d[v][i][m]
 
-    # Create list of labels for the X-axis
-    for v in messages['gtp'].keys():
-        for m in messages['gtp'][v]:
-            label.append(messages['gtp'][v][m])
-
-    # Create list of values for the Y-axis
-    for v in messages['gtp'].keys():
-        for m in messages['gtp'][v]:
-            # val = overall_values[(v, m)] if m in overall_values.keys() else 0
-            values.append(overall_values[(v, m)] if (v, m) in overall_values.keys() else 0)
-
-    # this is for plotting purpose
-    index = np.arange(len(label))
-    # index = overall_values.keys()
-    plt.bar(index, values)
-    plt.xlabel('GTP Message', fontsize=10)
-    plt.ylabel('No of Messages', fontsize=10)
-    plt.xticks(index, label, fontsize=10, rotation=45)
-    plt.title('Number of messages - Sum total')
-    plt.show()
+    pdf_pages.savefig(create_barchart_sum(overall_values))
+    plt.close()
+    # Write the PDF document to the disk
+    pdf_pages.close()
 
 
-def process_pcap(pcap):
-    """Process each pcap packet
-       Args:
-           pcap: dpkt pcap reader object (dpkt.pcap.Reader)
+def process_pcap(pcap, base):
     """
-
+    Process a pcap file
+    :param pcap: pcap file as read by pyshark module
+    :param base: base name of the file being processed
+    :return: None
+    """
     # Establish communication queues
     tasks = {}
     packets_to_process = {}
@@ -245,9 +388,7 @@ def process_pcap(pcap):
     results.task_done()
 
     # Print results
-    print_results(results)
-    # while not results.empty():
-    #     print results.get()
+    print_results(results, base)
 
 
 def parse_options(argv):
@@ -306,11 +447,12 @@ def main(argv):
     print('Processing file {0}...'.format(options.ifile))
 
     # Determine the number of tasks that can be run in parallel
-    num_proc = cpu_count()
+    # num_proc = cpu_count()
 
     if options.ifile:
         cap = pyshark.FileCapture(options.ifile)
-        process_pcap(cap)
+        base = os.path.splitext(os.path.basename(options.ifile))[0]
+        process_pcap(cap, base)
 
     print('...Finished')
 
