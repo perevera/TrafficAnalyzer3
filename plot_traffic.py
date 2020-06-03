@@ -14,7 +14,12 @@ messages = {'gtp': {1: 'EchoRequest', 2: 'EchoResponse',
                       34: 'ModifyBearerRequest', 35: 'ModifyBearerResponse',
                       36: 'DeleteSessionRequest', 37: 'DeleteSessionResponse',
                       170: 'ReleaseAccessBearersRequest', 171: 'ReleaseAccessBearersResponse'},
-            'diameter': {1: 'Credit-Control Request', 0: 'Credit-Control Answer'},
+            'diameter': {272: 'Credit-Control',
+                         258: 'Re-Auth',
+                         274: 'Abort-Session',
+                         275: 'Session-Termination',
+                         8388635: 'Spending-Limit',
+                         8388636: 'Spending-Status-Notification'},
             's1ap': {9: 'InitialContextSetupRequest', 3: 'InitialContextSetupRequest'},
             'gsm_map': {2: 'updateLocation', 3: 'cancelLocation', 7: 'insertSubscriberData',
                         8: 'deleteSubscriberData', 23: 'updateGprsLocation', 43: 'checkIMEI',
@@ -53,21 +58,12 @@ def create_barchart(dictio, k, proto):
     for v in messages[proto]:
         labels.append(messages[proto][v])
 
-    # # Compute the number of messages of each type
-    # for k in dictio:
-    #     for m in dictio[k]:
-    #         if m not in sum_values:
-    #             sum_values[m] = [0, 0]
-    #         sum_values[m][0] += dictio[k][m][0]
-    #         sum_values[m][1] += dictio[k][m][1]
-    #
-
     requests = []
     responses = []
 
     for m in messages[proto]:
-        requests.append(dictio[k][m][0] if m in dictio[k] else 0)
-        responses.append(dictio[k][m][1] if m in dictio[k] else 0)
+        requests.append(dictio[k][m][1] if m in dictio[k] else 0)
+        responses.append(dictio[k][m][0] if m in dictio[k] else 0)
 
     # This is for plotting purpose
     ind = np.arange(len(messages[proto]))  # the x locations for the groups
@@ -82,7 +78,7 @@ def create_barchart(dictio, k, proto):
     ax.set_ylabel('Number of messages')
     ax.set_title('Key: {}'.format(k))
     ax.set_xticks(ind)
-    ax.set_xticklabels(labels, rotation=15)
+    ax.set_xticklabels(labels, rotation=5)
     ax.legend()
 
     autolabel(ax, rects1, "left")
