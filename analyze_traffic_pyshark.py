@@ -1,19 +1,22 @@
 #!/usr/bin/python
 # -*- coding: utf-8 -*-
 
+# from collections import Counter
 import csv
 from optparse import OptionParser
 import os
-from plot_traffic import print_results, messages
+from plot_traffic import print_results, applications, messages, Parties
 import pyshark
 import sys
 from time import time
 
-dict_ips = dict()       # Dictionary of messages by ip pairs
+dict_ips = dict()
 dict_pcs = dict()       # Dictionary of messages by point code pairs
 dict_gts = dict()       # Dictionary of messages by global title pairs
 dict_nodes = dict()     # Dictionary of messages by node name pairs
 nodes_csv = dict()      # Contents of nodes.csv file
+list_unknown_apps = list()   # List of unknown application ids
+list_unknown_msgs = list()   # List of unknown code messages
 
 # (from nodes.csv file)
 
@@ -54,63 +57,85 @@ def count_packets():
     return len(packets_array)
 
 
-def count_message(dictio, key, op_id, i):
+def count_message(dictio, parties, op_id, i, app_id=None, ports=None):
     """
-
+    Add message to the count by key (parties)
+    :param dictio: Dictionary to contain all series
+    :param parties: Pair of parties exchanging the messages
+    :param op_id: Operation id of the message
+    :param i: Request/Answer
+    :param app_id: Application id
+    :ports: Pair of TCP ports exchanging the messages
     """
     # Combine couples of endpoints: (t1, t2) and (t2, t1) are considered the same key
-    qey = (key[1], key[0])
-    key = qey if qey in dictio else key
+    # qey = (key[1], key[0])
+    qey = Parties(parties.b, parties.a)
+    key = qey if qey in dictio else parties
 
     if key not in dictio:
-        dictio[key] = dict()
+        # dictio[key] = dict()
+        dictio[key] = {'app_id': app_id,
+                       'ports': list(),
+                       'messages': dict()}
 
     # Create a new counter for the given couple of endpoints and message type if it does not exist yet
-    if op_id not in dictio[key]:
-        dictio[key][op_id] = [0, 0]
+    if op_id not in dictio[key]['messages']:
+        # dictio[key][op_id] = [0, 0, list()]
+        dictio[key]['messages'][op_id] = [0, 0]
 
     # Count new message
     try:
-        dictio[key][op_id][i] += 1
+        dictio[key]['messages'][op_id][i] += 1
     except KeyError:
         print('KeyError, keys: {},{}'.format(key, op_id))
+        
+    # Add ports to list
+    if ports:
+        try:
+            # dictio[key][op_id][2].append(ports.a)
+            # dictio[key][op_id][2].append(ports.b)
+            dictio[key]['ports'].append(ports.a)
+            dictio[key]['ports'].append(ports.b)
+        except KeyError:
+            print('KeyError, keys: {},{}'.format(key, op_id))
 
 
 def process_packet_gsm_map(*args):
     """
-
+    TO-DO: Extract application id and ports and use these data when invoking count_message()
+    Also review use of SSNs and Point Codes
     """
     pkt = args[0]
 
-    src_host = ''
-    dst_host = ''
-    mtp3_opc = ''
-    mtp3_dpc = ''
-    calling_digits = ''
-    called_digits = ''
+    ips = Parties(None, None)
+    ports = Parties(None, None)
+    pointcodes = Parties(None, None)
+    digits = Parties(None, None)
+    ssns = Parties(None, None)
 
     for layer in pkt.layers:
         if layer.layer_name == 'ip':
             try:
-                src_host = layer.src_host
-                dst_host = layer.dst_host
-                print('Source host: {}, Destination host: {}'.format(src_host, dst_host))
+                ips = Parties(layer.src_host, layer.dst_host)
+                # print('Source host: {}, Destination host: {}'.format(src_host, dst_host))
             except AttributeError as e:
                 pass
-        if layer.layer_name == 'm3ua':
+        elif layer.layer_name == 'tcp':
             try:
-                mtp3_opc = layer.mtp3_opc
-                mtp3_dpc = layer.mtp3_dpc
-                print('\tOPC: {}, DPC: {}'.format(mtp3_opc, mtp3_dpc))
+                ports = Parties(layer.srcport, layer.dstport)
+            except AttributeError as e:
+                pass
+        elif layer.layer_name == 'm3ua':
+            try:
+                pointcodes = Parties(layer.mtp3_opc, layer.mtp3_dpc)
+                # print('\tOPC: {}, DPC: {}'.format(mtp3_opc, mtp3_dpc))
             except AttributeError as e:
                 pass
         elif layer.layer_name == 'sccp':
             try:
-                calling_digits = layer.calling_digits
-                calling_ssn = layer.calling_ssn
-                called_digits = layer.called_digits
-                called_ssn = layer.called_ssn
-                print('\t\tCalling party: {}, Called party: {}'.format(calling_digits, called_digits))
+                digits = Parties(layer.calling_digits, layer.called_digits)
+                ssns = Parties(layer.calling_ssn, layer.called_ssn)
+                # print('\t\tCalling party: {}, Called party: {}'.format(calling_digits, called_digits))
             except AttributeError as e:
                 pass
         elif layer.layer_name == 'tcap':
@@ -130,11 +155,11 @@ def process_packet_gsm_map(*args):
                     msg = 'unknown'
                 try:
                     op_id = int(layer.gsm_old_localvalue)
-                    opc = '{}-{}'.format(mtp3_opc, SSN[calling_ssn])
-                    dpc = '{}-{}'.format(mtp3_dpc, SSN[called_ssn])
-                    count_message(dict_ips, (src_host, dst_host), op_id, i)
-                    count_message(dict_pcs, (opc, dpc), op_id, i)
-                    count_message(dict_gts, (calling_digits, called_digits), op_id, i)
+                    opc = '{}-{}'.format(pointcodes.a, SSN[ssns.a])
+                    dpc = '{}-{}'.format(pointcodes.b, SSN[ssns.b])
+                    count_message(dict_ips, ips, op_id, i, ports=ports)
+                    count_message(dict_pcs, pointcodes, op_id, i)
+                    count_message(dict_gts, digits, op_id, i)
                 except KeyError as e:
                     print(e)
             except AttributeError as e:
@@ -149,57 +174,73 @@ def process_packet_diameter(*args):
     """
     pkt = args[0]
 
-    src_host = ''
-    dst_host = ''
-    src_node = ''
-    dst_node = ''
+    ips = Parties(None, None)
+    ports = Parties(None, None)
+    nodes = Parties(None, None)
 
     for layer in pkt.layers:
 
         if layer.layer_name == 'ip':
             try:
-                src_host = layer.src_host
-                dst_host = layer.dst_host
-                print('Source host: {}, Destination host: {}'.format(src_host, dst_host))
+                ips = Parties(layer.src_host, layer.dst_host)
+                # print('Source host: {}, Destination host: {}'.format(src_host, dst_host))
                 try:
-                    src_node = nodes_csv[src_host]
+                    src_node = nodes_csv[ips.a]
                 except KeyError as e:
-                    src_node = src_host
+                    # src_node = src_host
+                    src_node = ips.a
                 try:
-                    dst_node = nodes_csv[dst_host]
+                    dst_node = nodes_csv[ips.b]
                 except KeyError as e:
-                    dst_node = dst_host
-                print('Source node: {}, Destination node: {}'.format(src_node, dst_node))
+                    dst_node = ips.b
+
+                nodes = Parties(src_node, dst_node)
+
+                # print('Source node: {}, Destination node: {}'.format(src_node, dst_node))
+            except AttributeError as e:
+                pass
+
+        elif layer.layer_name == 'tcp':
+
+            try:
+                ports = Parties(layer.srcport, layer.dstport)
             except AttributeError as e:
                 pass
 
         elif layer.layer_name == 'diameter':
 
-            cmd_code = int(layer.cmd_code)
+            # Determine application (i.e. interface, one of: Gx, Gy, S6a/Sd, Sy...)
+            app_id = int(layer.applicationid)
+            
+            try:
+                app = applications[app_id]
+            except KeyError as e:
+                app = 'Unknown'
+                if e.args[0] not in list_unknown_apps:
+                    list_unknown_apps.append(e.args[0])
+                    print('Unknown application id: {}'.format(e.args[0]))
 
             # Determine command
+            cmd_code = int(layer.cmd_code)
+            
             try:
-                if messages['diameter'][cmd_code] == 'Session-Termination':
-                    msg = 'Session-Termination'
-                elif messages['diameter'][cmd_code] == 'Spending-Limit':
-                    msg = 'Spending-Limit'
-                elif messages['diameter'][cmd_code] == 'Spending-Status-Notification':
-                    msg = 'Spending-Status-Notification'
+                msg = messages['diameter'][cmd_code]
             except KeyError as e:
                 msg = 'Unknown'
-                print('Unknown command code: {}'.format(e))
+                if e.args[0] not in list_unknown_msgs:
+                    list_unknown_msgs.append(e.args[0])
+                    print('Unknown command code: {}'.format(e.args[0]))
 
-            print(msg)
+            # print(msg)
 
             # Determine direction (request/answer)
             flags = bytearray(layer.flags.encode())
             extract_int = int.from_bytes(flags[8:10], "big")
-            # 'R' bit set in the Command Flags means request, cleared means answer
-            r_bit = extract_int >> 8 & 1
+            r_bit = extract_int >> 8 & 1    # 'R' bit set in the Command Flags means request, cleared means answer
 
             # Add to count
-            count_message(dict_ips, (src_host, dst_host), cmd_code, r_bit)
-            count_message(dict_nodes, (src_node, dst_node), cmd_code, r_bit)
+            count_message(dict_ips, ips, cmd_code, r_bit, app_id=app_id, ports=ports)
+            count_message(dict_nodes, nodes, cmd_code, r_bit, app_id=app_id, ports=ports)
 
         else:
             pass
@@ -220,8 +261,8 @@ def process_pcap(fname, proto, port):
     if proto == 'gsm_map':
         filtered_cap = pyshark.FileCapture(fname, display_filter='gsm_map', only_summaries=False)
         filtered_cap.apply_on_packets(process_packet_gsm_map, timeout=10000)
-        print_results(dict_ips, proto, '{}-{}.pdf'.format(os.path.splitext(os.path.basename(fname))[0], 'ips'))
-        print_results(dict_pcs, proto, '{}-{}.pdf'.format(os.path.splitext(os.path.basename(fname))[0], 'point-codes'))
+        print_results(dict_ips, proto, '{}_{}.pdf'.format(os.path.splitext(os.path.basename(fname))[0], 'ips'))
+        print_results(dict_pcs, proto, '{}_{}.pdf'.format(os.path.splitext(os.path.basename(fname))[0], 'point-codes'))
         # print_results(dict_gts, proto)
 
     elif proto == 'diameter':
@@ -233,11 +274,9 @@ def process_pcap(fname, proto, port):
             filtered_cap = pyshark.FileCapture(fname, display_filter='diameter', only_summaries=False)
 
         filtered_cap.apply_on_packets(process_packet_diameter, timeout=10000)
-        print_results(dict_ips, proto, '{}-{}.pdf'.format(os.path.splitext(os.path.basename(fname))[0], 'ips'))
-        print_results(dict_nodes, proto, '{}-{}.pdf'.format(os.path.splitext(os.path.basename(fname))[0], 'nodes'))
+        print_results(dict_ips, proto, '{}_{}.pdf'.format(os.path.splitext(os.path.basename(fname))[0], 'ips'))
+        print_results(dict_nodes, proto, '{}_{}.pdf'.format(os.path.splitext(os.path.basename(fname))[0], 'nodes'))
 
-        # print("Hello")
-    
     # print('Number of packets: {}...'.format(len(packets_array)))
 
 
@@ -295,12 +334,6 @@ def main(argv):
     print('Processing file {0}...'.format(options.ifile))
 
     process_pcap(options.ifile, options.proto, options.port)
-
-    # if options.ifile:
-    #     with open(options.ifile, 'rb') as f:
-    #         pcap = dpkt.pcap.Reader(f)
-    #         base = os.path.splitext(os.path.basename(options.ifile))[0]
-    #         process_pcap(pcap, base)
 
     print('...Finished')
 
